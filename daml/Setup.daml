@@ -1,0 +1,41 @@
+module Setup where
+
+import Daml.Script
+
+import Test.Util
+
+initLedger : Script ()
+initLedger = do
+  TestParties{..} <- setupPartiesAndUsers
+  let
+    id = "111"
+    price = 30_000.0
+    validCarOfferData = CarOfferData with ..
+
+  createCarOffer validCarOfferData
+  createCert certIssuer dealer
+  credit bank dealer (price + 5_000.0)
+
+  pure ()
+
+setupPartiesAndUsers : Script TestParties
+setupPartiesAndUsers = do
+  testparties@TestParties{..} <- setupParties
+
+  manufacturerId <- validateUserId "Manufacturer"
+  dealerId <- validateUserId "Dealer"
+  bankId <- validateUserId "Bank"
+  certIssuerId <- validateUserId "CertIssuer"
+  otherDealerId <- validateUserId "OtherDealer"
+  otherBankId <- validateUserId "OtherBank"
+  otherCertIssuerId <- validateUserId "OtherCertIssuer"
+
+  createUser (User manufacturerId (Some manufacturer)) [CanActAs manufacturer]
+  createUser (User dealerId (Some dealer)) [CanActAs dealer]
+  createUser (User bankId (Some bank)) [CanActAs bank]
+  createUser (User certIssuerId (Some certIssuer)) [CanActAs certIssuer]
+  createUser (User otherDealerId (Some otherDealer)) [CanActAs otherDealer]
+  createUser (User otherBankId (Some otherBank)) [CanActAs otherBank]
+  createUser (User otherCertIssuerId (Some otherCertIssuer)) [CanActAs otherCertIssuer]
+
+  pure testparties

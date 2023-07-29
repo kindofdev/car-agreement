@@ -1,0 +1,45 @@
+{-# LANGUAGE MultiWayIf #-}
+module Bank where
+
+-- An Iou issued by a bank to an owner.
+template Iou
+  with
+    bank : Party
+    owner : Party
+    amount : Decimal
+  where
+    signatory bank
+    observer owner
+    ensure bank /= owner
+        && amount >= 0.0
+
+    -- transfers the amount provided from the current iou to a new owner.
+    -- This results in:
+    --   (1) an iou with the amount provided own by new owner.
+    --   (2) an optional iou own by owner with the remaining amount in case
+    --       amountToTransfer is lower than the amount in the current iou.
+    choice Transfer : (ContractId Iou, Optional (ContractId Iou))
+      with
+        newOwner : Party
+        amountToTransfer : Decimal
+      controller owner
+      do
+        if | amountToTransfer == amount -> (, None) <$> create this with owner = newOwner
+           | amountToTransfer < amount  -> do
+              iouCid <- create this with owner = newOwner; amount = amountToTransfer
+              remaningCid <- create this with amount = amount - amountToTransfer
+              pure (iouCid, Some remaningCid)
+           | otherwise -> abort "Amount to transfer must be lower or equal the holding amount"
+
+    -- merge the current iou with another one own by owner.
+    choice Merge : ContractId Iou
+      with
+        iouCid : ContractId Iou
+      controller owner
+      do
+        iou <- fetch iouCid
+        assertMsg "Bank must match" $ iou.bank == bank
+        assertMsg "Owner must match" $ iou.owner == owner
+
+        archive iouCid
+        create this with amount = amount + iou.amount

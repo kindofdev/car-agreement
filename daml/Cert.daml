@@ -1,0 +1,12 @@
+module Cert where
+
+-- Certificate issued by an issuer to an owner.
+template Cert
+  with
+    issuer : Party
+    owner : Party
+  where
+    signatory issuer
+    key (issuer, owner) : (Party, Party)
+    maintainer key._1
+    observer owner

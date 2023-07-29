@@ -1,0 +1,161 @@
+module Test.Car where
+
+import DA.Functor (void)
+import Daml.Script
+
+import Bank
+import Car
+import Test.Util
+
+manufacturerCanCreateAnOffer : Script ()
+manufacturerCanCreateAnOffer = do
+  parties@TestParties{..} <- setupParties
+  let
+    id = "111"
+    price = 30_000.0
+    validCarOfferData = CarOfferData with ..
+
+  -- (unhappy) a dealer cannot create an offer
+  createCarOfferFails dealer validCarOfferData
+  -- (unhappy) an offer cannot have dealer and manufacturer being the same party
+  createCarOfferFails manufacturer validCarOfferData with dealer = manufacturer
+  -- (unhappy) an offer cannot have an empty id
+  createCarOfferFails manufacturer validCarOfferData with id = ""
+  -- (unhappy) an offer cannot have a price zero
+  createCarOfferFails manufacturer validCarOfferData with price = 0.0
+  -- (unhappy) an offer cannot have a price negative
+  createCarOfferFails manufacturer validCarOfferData with price = -1.0
+
+  -- (happy) manufacturer can create an offer
+  carOfferCid <- createCarOffer validCarOfferData
+  assertCanOnlySeenBy carOfferCid parties [manufacturer, dealer]
+
+  -- (unhappy) manufacturer cannot create an offer with existing id
+  createCarOfferFails manufacturer validCarOfferData
+  -- (happy) manufacturer can create an offer with a non-existing id
+  void $ createCarOffer validCarOfferData with id = "222"
+
+carDealerWithrawAnOffer : Script ()
+carDealerWithrawAnOffer = do
+  parties@TestParties{..} <- setupParties
+  let
+    id = "111"
+    price = 30_000.0
+    validCarOfferData = CarOfferData with ..
+
+  carOfferCid <- createCarOffer validCarOfferData
+
+  -- (unhappy) dealer cannot withdraw an offer
+  withdrawCarOfferFails dealer carOfferCid
+  -- (unhappy) other dealer (not in the offer) cannot withdraw an offer
+  withdrawCarOfferFails otherDealer carOfferCid
+
+  -- (happy) manufacturer can withdraw an offer
+  withdrawCarOffer manufacturer carOfferCid
+  assertNonExistence manufacturer carOfferCid
+
+dealerRejectAnOffer : Script ()
+dealerRejectAnOffer = do
+  parties@TestParties{..} <- setupParties
+  let
+    id = "111"
+    price = 30_000.0
+    validCarOfferData = CarOfferData with ..
+
+  carOfferCid <- createCarOffer validCarOfferData
+
+  -- (unhappy) manufacturer cannot reject an offer
+  rejectCarOfferFails manufacturer carOfferCid
+  -- (unhappy) other dealer (not in the offer) cannot reject an offer
+  rejectCarOfferFails otherDealer carOfferCid
+
+  -- (happy) dealer can reject an offer
+  rejectCarOffer dealer carOfferCid
+  assertNonExistence dealer carOfferCid
+
+dealerAcceptAnOffer : Script ()
+dealerAcceptAnOffer = do
+  parties@TestParties{..} <- setupParties
+  let
+    id = "111"
+    price = 30_000.0
+    validCarOfferData = CarOfferData with ..
+
+  carOfferCid <- createCarOffer validCarOfferData
+
+  -- iou setup
+  iou5KCid <- credit bank dealer 5_000.0
+  iou25KCid <- credit bank dealer 25_000.0
+  iou30KCid <- merge dealer iou5KCid iou25KCid
+  iou35KCid <- credit bank dealer 35_000.0
+  iou29KCid <- credit bank dealer 29_000.0
+  iouFromOtherDealerCid <- credit bank otherDealer price
+  iouFromOtherBankCid <- credit otherBank dealer price
+
+  -- cert setup
+  certCid <- createCert certIssuer dealer
+  certFromOtherIssuerCid <- createCert otherCertIssuer dealer
+  certFromOtherDealerCid <- createCert certIssuer otherDealer
+
+  -- (unhappy) manufacturer cannot accept an offer
+  acceptCarOfferFails manufacturer carOfferCid iou30KCid certCid
+
+  -- (unhappy) dealer cannot accept an offer using a cert issued by
+  --  an issuer not pointed by manufacturer
+  acceptCarOfferFails dealer carOfferCid iou30KCid certFromOtherIssuerCid
+  -- (unhappy) dealer cannot accept an offer using a cert owned by other dealer
+  acceptCarOfferFails dealer carOfferCid iou30KCid certFromOtherDealerCid
+
+  -- (unhappy) dealer cannot accept an offer using an insufficient iou
+  acceptCarOfferFails dealer carOfferCid iou29KCid certCid
+  -- (unhappy) dealer cannot accept an offer using an iou owned by other dealer
+  acceptCarOfferFails dealer carOfferCid iouFromOtherDealerCid certCid
+  -- (unhappy) dealer cannot accept an offer using an iou from a bank not pointed by manufacturer
+  acceptCarOfferFails dealer carOfferCid iouFromOtherBankCid certCid
+
+
+  -- (happy) dealer can accept an offer passing a iou with the exact amount
+  (agreementCid, manufacturerHoldingCid, None) <-
+    acceptCarOffer dealer carOfferCid iou30KCid certCid
+  -- offer keeps alive (dealer can use it for creating extra agreements)
+  assertExistence manufacturer carOfferCid
+  -- iou from dealer is archived
+  assertNonExistence dealer iou30KCid
+  assertCanOnlySeenBy agreementCid parties [manufacturer, dealer]
+  -- a proper agreement is created
+  assertContractEquals dealer agreementCid DeliverCarAgreement with
+    orderId = id <> "-1"
+    ..
+  assertCanOnlySeenBy manufacturerHoldingCid parties [manufacturer, bank]
+  -- a holding with the price amount is transferred to manufacturer
+  assertContractEquals manufacturer manufacturerHoldingCid Iou with
+    owner = manufacturer
+    amount = price
+    bank
+
+
+  -- (happy) dealer can accept an offer again passing a iou with an amount
+  -- greater than price
+  (agreementCid, manufacturerHoldingCid, Some dealerRemaingIouCid) <-
+    acceptCarOffer dealer carOfferCid iou35KCid certCid
+  -- offer keeps alive (dealer can use it for creating extra agreements)
+  assertExistence manufacturer carOfferCid
+  -- iou from dealer is archived
+  assertNonExistence dealer iou35KCid
+  assertCanOnlySeenBy agreementCid parties [manufacturer, dealer]
+  -- a proper agreement is created
+  assertContractEquals dealer agreementCid DeliverCarAgreement with
+    orderId = id <> "-2"
+    ..
+  assertCanOnlySeenBy manufacturerHoldingCid parties [manufacturer, bank]
+  -- a holding with the price amount is transferred to manufacturer
+  assertContractEquals manufacturer manufacturerHoldingCid Iou with
+    owner = manufacturer
+    amount = price
+    bank
+  assertCanOnlySeenBy dealerRemaingIouCid parties [dealer, bank]
+  -- a holding with the remaining amount is own by dealer
+  assertContractEquals dealer dealerRemaingIouCid Iou with
+    owner = dealer
+    amount = 5_000.0
+    bank

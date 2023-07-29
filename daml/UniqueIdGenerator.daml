@@ -1,0 +1,25 @@
+module UniqueIdGenerator where
+
+type UniqueIdGeneratorKey = (Party, Text)
+
+-- Helper for generating unique ids.
+template UniqueIdGenerator
+  with
+    provider : Party
+    id : Text
+    counter : Int
+    obs : Party
+  where
+    signatory provider
+    observer obs
+    key (provider, id) : UniqueIdGeneratorKey
+    maintainer key._1
+
+    ensure counter > 0
+
+    -- generates a new unique id.
+    choice Next : (Int, ContractId UniqueIdGenerator)
+      controller provider
+      do
+        cid <- create this with counter = counter + 1
+        pure (counter, cid)

@@ -1,0 +1,110 @@
+module Car where
+
+import DA.Text
+
+import Bank
+import Cert
+import UniqueIdGenerator
+
+-- type alias for Accept choice result in CarOffer template
+type CarOfferAcceptResult =
+  (ContractId DeliverCarAgreement, ContractId Iou, Optional (ContractId Iou))
+
+-- Car offer made by manufacturer for dealer.
+template CarOffer
+  with
+    manufacturer : Party
+    dealer : Party
+    bank : Party
+    certIssuer : Party
+    id : Text
+    price : Decimal
+  where
+    signatory manufacturer
+    observer dealer
+    key (manufacturer, id) : (Party, Text)
+    maintainer key._1
+
+    ensure manufacturer /= dealer
+        && (not . isEmpty $ id)
+        && price > 0.0
+
+    -- dealer accepts an offer created by manufacturer passing an iou with
+    -- sufficient amount to cover price and a proper cert issued by an issuer
+    -- pointed by manufacturer.
+    -- This results in:
+    --   (1) a DeliverCarAgreement between dealer and manufacturer created.
+    --   (2) an iou with price own by manufacturer.
+    --   (3) an optional iou own by dealer with the remaining amount in case
+    --       dealer provides an iou with amount greater that price.
+    nonconsuming choice Accept : CarOfferAcceptResult
+      with
+        iouCid : ContractId Iou
+        certCid : ContractId Cert
+      controller dealer
+      do
+        -- Sanity checks
+        iou <- fetch iouCid
+        assertMsg "Iou's owner must match dealer in the offer" $
+          iou.owner == dealer
+        assertMsg "Iou's bank must match bank in the offer" $
+          iou.bank == bank
+        assertMsg "Iou's amount must greater or equal than price in the offer" $
+          iou.amount >= price
+
+        cert <- fetch certCid
+        assertMsg "Cert provided does not match issuer pointed by manufacturer" $
+          cert.issuer == certIssuer
+        assertMsg "Cert provided is not own to dealer in the offer" $
+          cert.owner == dealer
+
+        (iouCid', optRemaingCid) <- exercise iouCid Transfer with
+          newOwner = manufacturer
+          amountToTransfer = price
+        uniqueId <- fst <$> exerciseByKey @UniqueIdGenerator (manufacturer, id) Next
+        agreementCid <- create DeliverCarAgreement with
+          orderId = id <> "-" <> show uniqueId
+          ..
+        pure (agreementCid, iouCid', optRemaingCid)
+
+    -- dealer rejects the offer.
+    choice Reject : ()
+      controller dealer
+      do pure ()
+
+    -- manufacturer withdraws the offer.
+    choice Withdraw : ()
+      controller manufacturer
+      do pure ()
+
+-- Helper for creating CarOffer.
+-- This is used to create atomically an UniqueIdGenerator contract linked to
+-- CarOffer (uniqueIdGenerator.id == carOffer.id)
+template CarOfferBuilder
+  with
+    carOffer : CarOffer
+  where
+    signatory carOffer.manufacturer
+
+    choice Build : (ContractId CarOffer, ContractId UniqueIdGenerator)
+      controller carOffer.manufacturer
+      do
+        idGenCid <- create UniqueIdGenerator with
+          provider = carOffer.manufacturer
+          id = carOffer.id
+          counter = 1
+          obs = carOffer.dealer
+        carOfferCid <- create carOffer
+        pure (carOfferCid, idGenCid)
+
+-- Agreement between manufacturer and dealer to deliver a car.
+template DeliverCarAgreement
+  with
+    manufacturer : Party
+    dealer : Party
+    orderId : Text
+  where
+    signatory manufacturer, dealer
+    key (manufacturer, orderId) : (Party, Text)
+    maintainer key._1
+    agreement show manufacturer <> " is obliged to deliver a car to " <> show dealer <> "."

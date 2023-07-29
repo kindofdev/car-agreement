@@ -1,0 +1,120 @@
+module Test.Util where
+
+import DA.Assert
+import DA.Foldable (mapA_)
+import DA.List ((\\))
+import DA.Optional (fromSome, isNone, isSome)
+import Daml.Script
+
+import Car
+import Cert
+import Bank
+
+data TestParties = TestParties
+  with
+    manufacturer : Party
+    dealer : Party
+    bank : Party
+    certIssuer : Party
+    otherCertIssuer : Party
+    otherDealer : Party
+    otherBank : Party
+  deriving (Show, Eq, Ord)
+
+instance IsParties TestParties where
+  toParties TestParties{..} =
+    [ manufacturer
+    , dealer
+    , bank
+    , certIssuer
+    , otherCertIssuer
+    , otherDealer
+    , otherBank
+    ]
+
+setupParties : Script TestParties
+setupParties = do
+  manufacturer <- allocatePartyWithHint "Manufacturer" $ PartyIdHint "Manufacturer"
+  dealer <- allocatePartyWithHint "Dealer" $ PartyIdHint "Dealer"
+  bank <- allocatePartyWithHint "Bank" $ PartyIdHint "Bank"
+  certIssuer <- allocatePartyWithHint "CertIssuer" $ PartyIdHint "CertIssuer"
+  otherDealer <- allocatePartyWithHint "OtherDealer" $ PartyIdHint "OtherDealer"
+  otherBank <- allocatePartyWithHint "OtherBank" $ PartyIdHint "OtherBank"
+  otherCertIssuer <- allocatePartyWithHint "OtherCertIssuer" $ PartyIdHint "OtherCertIssuer"
+  pure TestParties with ..
+
+data CarOfferData = CarOfferData
+  with
+    manufacturer : Party
+    dealer : Party
+    bank : Party
+    certIssuer : Party
+    id : Text
+    price : Decimal
+  deriving (Eq, Show, Ord)
+
+createCarOffer : CarOfferData ->  Script (ContractId CarOffer)
+createCarOffer CarOfferData{..} = fst <$>
+  submit manufacturer (createAndExerciseCmd (CarOfferBuilder with
+    carOffer = CarOffer with ..) Build)
+
+createCarOfferFails : Party -> CarOfferData -> Script ()
+createCarOfferFails actor CarOfferData{..} =
+  submitMustFail actor (createAndExerciseCmd (CarOfferBuilder with
+    carOffer = CarOffer with ..) Build)
+
+acceptCarOffer
+  : Party -> ContractId CarOffer -> ContractId Iou
+ -> ContractId Cert -> Script CarOfferAcceptResult
+acceptCarOffer dealer carOfferCid iouCid certCid = do
+  submit dealer $ exerciseCmd carOfferCid Accept with ..
+
+acceptCarOfferFails
+  : Party -> ContractId CarOffer -> ContractId Iou
+ -> ContractId Cert -> Script ()
+acceptCarOfferFails actor carOfferCid iouCid certCid = do
+  submitMustFail actor $ exerciseCmd carOfferCid Accept with ..
+
+rejectCarOffer : Party -> ContractId CarOffer -> Script ()
+rejectCarOffer dealer carOfferCid = do
+  submit dealer $ exerciseCmd carOfferCid Reject
+
+rejectCarOfferFails : Party -> ContractId CarOffer -> Script ()
+rejectCarOfferFails actor carOfferCid = do
+  submitMustFail actor $ exerciseCmd carOfferCid Reject
+
+withdrawCarOffer : Party -> ContractId CarOffer -> Script ()
+withdrawCarOffer manufacturer carOfferCid = do
+  submit manufacturer $ exerciseCmd carOfferCid Withdraw
+
+withdrawCarOfferFails : Party -> ContractId CarOffer -> Script ()
+withdrawCarOfferFails actor carOfferCid = do
+  submitMustFail actor $ exerciseCmd carOfferCid Withdraw
+
+createCert : Party -> Party ->  Script (ContractId Cert)
+createCert issuer owner =
+  submit issuer $ createCmd Cert with ..
+
+credit : Party -> Party -> Decimal -> Script (ContractId Iou)
+credit bank owner amount = submit bank $ createCmd Iou with ..
+
+merge : Party -> ContractId Iou -> ContractId Iou -> Script (ContractId Iou)
+merge owner iouCid1 iouCid2 =
+  submit owner $ exerciseCmd iouCid1 Merge with iouCid = iouCid2
+
+
+assertCanOnlySeenBy : (Template t, HasAgreement t) => ContractId t -> TestParties -> [Party] -> Script ()
+assertCanOnlySeenBy cid parties viewers = do
+  mapA_ (\p -> queryContractId p cid >>= assert . isSome) viewers
+  mapA_ (\p -> queryContractId p cid >>= assert . isNone) $ toParties parties \\ viewers
+
+assertNonExistence : (Template t, HasAgreement t) => Party -> ContractId t -> Script ()
+assertNonExistence p cid = queryContractId p cid >>= assert . isNone
+
+assertExistence : (Template t, HasAgreement t) => Party -> ContractId t -> Script ()
+assertExistence p cid = queryContractId p cid >>= assert . isSome
+
+assertContractEquals
+  : (Template t, HasAgreement t, Show t, Eq t)
+ => Party -> ContractId t -> t -> Script ()
+assertContractEquals p cid t = queryContractId p cid >>= (t === ) . fromSome
